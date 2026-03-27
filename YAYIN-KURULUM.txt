@@ -1,0 +1,62 @@
+================================================================================
+YAYIN (Vercel) — En kolay yol: Vercel + GitHub bağla (önerilen)
+================================================================================
+Ben senin Vercel/GitHub hesabına giremem; aşağıdakileri sırayla SEN tıklayacaksın.
+Proje zaten `npm run build` ile derleniyor; yayına hazır.
+
+--- YÖNTEM 1: Tek seferlik bağlantı (çoğu kişi bunu kullanır) ---
+
+1) Kod GitHub’da olsun
+   - Repo oluştur, adres örnek: https://github.com/KULLANICI/proje
+   - Bilgisayarındaki projeyi push et (origin doğru olmalı).
+
+2) vercel.com → Log in (GitHub ile giriş önerilir)
+
+3) "Add New…" → Project → Import Git Repository
+   - GitHub’ı seç, repoyu bağla, projeyi seç → Deploy.
+
+4) Vercel → Project → Settings → Environment Variables
+   Şunları Production (ve istersen Preview) için ekle — .env.local ile aynı mantık:
+   NEXT_PUBLIC_SUPABASE_URL
+   NEXT_PUBLIC_SUPABASE_ANON_KEY
+   NEXT_PUBLIC_AUTH_EMAIL_DOMAIN
+   NEXT_PUBLIC_LOGIN_USERNAME
+   İsteğe bağlı: SUPABASE_SERVICE_ROLE_KEY
+
+5) Redeploy: Deployments → son deployment → … → Redeploy
+
+Bundan sonra her `git push` (main/master) Vercel’de yeni deployment tetikler
+(GitHub entegrasyonu açıkken). Ekstra iş yok.
+
+6) Supabase → Authentication → URL Configuration
+   Site URL ve Redirect URL = Vercel’in verdiği https://….vercel.app
+
+
+--- YÖNTEM 2: GitHub Actions ile deploy (repo’da workflow dosyası var) ---
+
+1) Vercel’de bir kez proje oluştur (Import veya boş proje).
+
+2) Vercel → Project Settings → General
+   - Project ID kopyala
+   - Team/Org: "Team ID" / Organization ID (Vercel hesabına göre Settings → burada org id)
+
+3) Vercel → Account Settings → Tokens → Create Token (scope: full veya deploy)
+
+4) GitHub → Repo → Settings → Secrets and variables → Actions → New repository secret:
+   VERCEL_TOKEN        = oluşturduğun token
+   VERCEL_ORG_ID       = Vercel’de Team / Personal account ID (Project Settings → burada yazar)
+   VERCEL_PROJECT_ID   = Project ID
+
+   Org/Project ID bulma: Project Settings → General sayfasında "Project ID" ve
+   URL’de veya Vercel CLI: `vercel link` sonrası .vercel/project.json
+
+5) Push yapınca .github/workflows/vercel-production.yml çalışır.
+
+Not: Yöntem 1 açıksa Yöntem 2’ye gerek olmayabilir (çift deploy olmaması için
+workflow’u silmek veya Vercel’de sadece Git entegrasyonu kullanmak mantıklı).
+
+
+--- Hızlı kontrol ---
+
+Yerel:  npm run build
+Vercel: Build Command varsayılan "next build", Output ".next" — Next.js için doğru.
