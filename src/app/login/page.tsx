@@ -1,11 +1,11 @@
+import { LoginForm } from "@/app/login/login-form";
 import { FloatingHearts } from "@/components/floating-hearts";
-import { WelcomeCard } from "@/components/welcome-card";
 
-export default function Home() {
+export default function LoginPage() {
   return (
     <>
       <FloatingHearts />
-      <WelcomeCard />
+      <LoginForm />
     </>
   );
 }

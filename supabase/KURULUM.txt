@@ -1,0 +1,45 @@
+================================================================================
+LİLA KÖPRÜ — Supabase + Vercel (sadece şifreyi bilenler giriş)
+================================================================================
+
+A) SUPABASE — API anahtarları
+-----------------------------
+Project Settings → API
+   - Project URL  → NEXT_PUBLIC_SUPABASE_URL
+   - anon public  → NEXT_PUBLIC_SUPABASE_ANON_KEY
+   - service_role → .env.local içinde SUPABASE_SERVICE_ROLE_KEY (script + opsiyonel hata mesajı)
+
+B) SQL
+------
+SQL Editor → supabase/setup-lila-kopru.sql tamamını çalıştır.
+
+C) Auth kullanıcısı (otomatik — önerilir)
+-----------------------------------------
+.env.local doldur (özellikle SUPABASE_SERVICE_ROLE_KEY):
+
+   npm run supabase:create-user
+
+Bu komut e-postayı şu şekilde oluşturur/günceller:
+   NEXT_PUBLIC_LOGIN_USERNAME + "@" + NEXT_PUBLIC_AUTH_EMAIL_DOMAIN
+Şifre: src/lib/login-password.ts (giriş formu ile aynı kaynak).
+
+Elle eklemek istersen: Authentication → Users (detay: supabase/PANEL-ADIMLARI.txt).
+
+D) Panel: kayıt kapalı + Vercel URL
+-----------------------------------
+supabase/PANEL-ADIMLARI.txt dosyasına bak (Email signup kapatma, Site URL / Redirect URLs).
+
+E) Vercel ortam değişkenleri
+----------------------------
+Tam liste: proje kökünde vercel-environment-variables.txt
+
+
+F) YEREL .env.local
+-------------------
+.env.example veya .env.local.example şablonuna göre doldur.
+
+
+G) NOT
+------
+Şifre şu an src/lib/login-password.ts içinde; repo açıksa teknik olarak görülebilir.
+Kayıt kapalıysa yeni hesap açılamaz.

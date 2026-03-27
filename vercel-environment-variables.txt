@@ -1,0 +1,18 @@
+================================================================================
+Vercel → Project → Settings → Environment Variables
+Production (ve isteğe bağlı Preview) için aynı anahtarları ekle:
+================================================================================
+
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+NEXT_PUBLIC_AUTH_EMAIL_DOMAIN
+NEXT_PUBLIC_LOGIN_USERNAME
+
+İsteğe bağlı (önerilir — giriş hata ayrımı):
+SUPABASE_SERVICE_ROLE_KEY
+
+Not: SUPABASE_SERVICE_ROLE_KEY sadece Production/Preview ortam değişkeni;
+"Encrypted" / sensitive olarak işaretlenebilir. İstemci bundle'a gitmez.
+
+Şifre kodda src/lib/login-password.ts içindedir; Vercel'e şifre env olarak
+eklemen gerekmez (mevcut mimari).

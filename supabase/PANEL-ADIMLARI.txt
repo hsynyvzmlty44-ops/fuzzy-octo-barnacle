@@ -1,0 +1,28 @@
+================================================================================
+Supabase Dashboard — senin tıklaman gerekenler (API ile yapılamayanlar)
+================================================================================
+
+A) Kayıt kapalı (sadece sizin oluşturduğunuz kullanıcı girsin)
+   Authentication → Providers → Email
+   → "Enable Email Signup" / "Confirm email" ekranına göre:
+   → "Allow new users to sign up" KAPALI (Disable sign ups) olsun.
+   (Arayüz sürümüne göre metin "Disable Sign Ups" veya benzeri.)
+
+B) Site URL ve yönlendirme (Vercel adresin)
+   Authentication → URL Configuration
+   → Site URL: https://PROJE-ADIN.vercel.app
+   → Redirect URLs: aynı adresi ekle, örnek:
+      https://PROJE-ADIN.vercel.app
+      https://PROJE-ADIN.vercel.app/**
+   İstersen önizlemeler için: https://*.vercel.app/**
+
+C) Kullanıcı oluşturma (otomatik tercih)
+   Proje kökünde .env.local doldurulmuşken:
+      npm run supabase:create-user
+   Bu komut service_role ile Auth’ta kullanıcıyı oluşturur veya şifreyi günceller.
+   Çıktıda tam e-posta adresi yazar (Supabase’in kabul ettiği ASCII biçim).
+
+   Elle “Add user” kullanırsan: Dashboard e-postada @ öncesinde TÜRKÇE ı kabul ETMEZ.
+   Uygulama artık girişte “bakalım” yazılsa bile Auth’a bakalim@bakalim.local gider.
+   Elle yazacaksan: düz i kullan (bakalim@bakalim.local) — şifre login-password.ts ile aynı.
+   “Auto Confirm User” işaretli olsun.
