@@ -23,7 +23,7 @@ const poemSerif = Cormorant_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "Lila Köprü",
+  title: "bakalım",
   description: "Modern Lila & Glassmorphism",
 };
 
