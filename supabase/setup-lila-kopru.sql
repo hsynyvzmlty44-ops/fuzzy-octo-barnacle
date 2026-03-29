@@ -132,3 +132,10 @@ create policy "couple_todos_select" on public.couple_todos for select to authent
 create policy "couple_todos_insert" on public.couple_todos for insert to authenticated with check (true);
 create policy "couple_todos_update" on public.couple_todos for update to authenticated using (true) with check (true);
 create policy "couple_todos_delete" on public.couple_todos for delete to authenticated using (true);
+
+-- ---------------------------------------------------------------------------
+-- Giriş (Auth): Tablolar authenticated ister. Kullanıcı yoksa çoklu cihaz çalışmaz.
+-- Bilgisayarda .env.local doldur → terminal: npm run supabase:create-user
+-- Vercel’de NEXT_PUBLIC_AUTH_EMAIL_DOMAIN + NEXT_PUBLIC_LOGIN_USERNAME yereldekiyle
+-- aynı olmalı (usernameToEmail ile oluşan adres birebir eşleşsin).
+-- ---------------------------------------------------------------------------

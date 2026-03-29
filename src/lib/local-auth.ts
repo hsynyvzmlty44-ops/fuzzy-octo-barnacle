@@ -8,3 +8,10 @@ export function setLocalSessionCookieClient(): void {
     typeof window !== "undefined" && window.location.protocol === "https:";
   document.cookie = `${LOCAL_SESSION_COOKIE}=${LOCAL_SESSION_VALUE}; path=/; max-age=${maxAge}; SameSite=Lax${secure ? "; Secure" : ""}`;
 }
+
+/** Supabase oturumu varken eski yerel çerezi sil; bulut + uyarı tutarsızlığını önler */
+export function clearLocalSessionCookieClient(): void {
+  const secure =
+    typeof window !== "undefined" && window.location.protocol === "https:";
+  document.cookie = `${LOCAL_SESSION_COOKIE}=; path=/; max-age=0; SameSite=Lax${secure ? "; Secure" : ""}`;
+}

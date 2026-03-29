@@ -3,7 +3,10 @@
 import { usernameToEmail } from "@/lib/auth-helpers";
 import { COUPLE_LOGIN_PASSWORD } from "@/lib/login-password";
 import { resolveAllowedLoginUsername } from "@/lib/login-users";
-import { setLocalSessionCookieClient } from "@/lib/local-auth";
+import {
+  clearLocalSessionCookieClient,
+  setLocalSessionCookieClient,
+} from "@/lib/local-auth";
 import { cn } from "@/lib/utils";
 import { createBrowserSupabaseClient } from "@/lib/supabase";
 import { motion } from "framer-motion";
@@ -66,13 +69,19 @@ export function LoginForm() {
       });
 
       if (signError) {
-        setLocalSessionCookieClient();
         setLoading(false);
-        router.refresh();
-        router.replace("/dashboard");
+        setError(
+          [
+            "Bulut hesabına girilemedi; anılar/yapılacaklar diğer cihazda görünmez.",
+            `Hata: ${signError.message}`,
+            `Olması gereken e-posta: ${email}`,
+            "Çözüm: PC’de .env.local + SUPABASE_SERVICE_ROLE_KEY ile `npm run supabase:create-user` — veya Supabase → Authentication’da bu e-postayla kullanıcı aç; şifre `login-password.ts` içindeki çift şifresiyle aynı olsun.",
+          ].join("\n")
+        );
         return;
       }
 
+      clearLocalSessionCookieClient();
       await supabase.auth.getSession();
       setLoading(false);
       router.refresh();
@@ -141,7 +150,7 @@ export function LoginForm() {
 
         {error && (
           <p
-            className="text-center text-sm text-rose-200/95"
+            className="whitespace-pre-line text-center text-sm leading-relaxed text-rose-200/95"
             role="alert"
           >
             {error}
