@@ -1,6 +1,7 @@
 "use client";
 
 import { newTodoId, readLocalTodos, writeLocalTodos } from "@/lib/local-todos";
+import { useEffectiveCloudSync } from "@/lib/use-effective-cloud-sync";
 import { createBrowserSupabaseClient } from "@/lib/supabase";
 import { fetchTodosRemote, replaceTodosRemote } from "@/lib/todos-remote";
 import type { CoupleTodoItem } from "@/lib/todo-types";
@@ -12,6 +13,8 @@ export function CoupleTodoList({
 }: {
   useCloudSync?: boolean;
 } = {}) {
+  const { effectiveCloudSync, clientChecked } =
+    useEffectiveCloudSync(useCloudSync);
   const [items, setItems] = useState<CoupleTodoItem[]>([]);
   const [draft, setDraft] = useState("");
   const [ready, setReady] = useState(false);
@@ -20,7 +23,7 @@ export function CoupleTodoList({
   const cloudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const pushTodosRemote = useCallback(() => {
-    if (!useCloudSync) return;
+    if (!effectiveCloudSync) return;
     if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
     cloudTimerRef.current = setTimeout(() => {
       cloudTimerRef.current = null;
@@ -33,13 +36,15 @@ export function CoupleTodoList({
         }
       })();
     }, 1200);
-  }, [useCloudSync]);
+  }, [effectiveCloudSync]);
 
   useEffect(() => {
+    if (!useCloudSync && !clientChecked) return;
+
     const local = readLocalTodos();
     setItems(local);
 
-    if (!useCloudSync) {
+    if (!effectiveCloudSync) {
       setReady(true);
       return;
     }
@@ -69,12 +74,12 @@ export function CoupleTodoList({
     return () => {
       cancelled = true;
     };
-  }, [useCloudSync]);
+  }, [effectiveCloudSync, clientChecked, useCloudSync]);
 
   useEffect(() => {
     const flush = () => {
       writeLocalTodos(itemsRef.current);
-      if (useCloudSync) {
+      if (effectiveCloudSync) {
         if (cloudTimerRef.current) {
           clearTimeout(cloudTimerRef.current);
           cloudTimerRef.current = null;
@@ -98,7 +103,7 @@ export function CoupleTodoList({
       window.removeEventListener("pagehide", flush);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [useCloudSync]);
+  }, [effectiveCloudSync]);
 
   const add = useCallback(() => {
     const text = draft.trim();

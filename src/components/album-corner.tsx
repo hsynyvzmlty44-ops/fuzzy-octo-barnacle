@@ -18,6 +18,7 @@ import {
   upsertAlbumPagesRemote,
   upsertAllAlbumPagesRemote,
 } from "@/lib/album-remote";
+import { useEffectiveCloudSync } from "@/lib/use-effective-cloud-sync";
 import { createBrowserSupabaseClient } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import {
@@ -668,6 +669,8 @@ export function AlbumCorner({
 
   const [hideRightBase, setHideRightBase] = useState(false);
   const [hideLeftBase, setHideLeftBase] = useState(false);
+  const { effectiveCloudSync, clientChecked } =
+    useEffectiveCloudSync(useCloudSync);
   useMotionValueEvent(rotateNextMV, "change", (v) => {
     setHideRightBase(Math.abs(v) > 0.8);
   });
@@ -702,12 +705,13 @@ export function AlbumCorner({
   const prevRightIdx = (spreadIndex - 1) * 2 + 1;
 
   useEffect(() => {
+    if (!useCloudSync && !clientChecked) return;
     let cancelled = false;
     void (async () => {
       const local = await loadAlbumPages();
       if (cancelled) return;
 
-      if (!useCloudSync) {
+      if (!effectiveCloudSync) {
         setPages(local);
         setReady(true);
         return;
@@ -739,7 +743,7 @@ export function AlbumCorner({
     return () => {
       cancelled = true;
     };
-  }, [useCloudSync]);
+  }, [effectiveCloudSync, clientChecked, useCloudSync]);
 
   useEffect(() => {
     if (!open) return;
@@ -772,7 +776,7 @@ export function AlbumCorner({
   }, []);
 
   const flushCloudUpsert = useCallback(() => {
-    if (!useCloudSync) return;
+    if (!effectiveCloudSync) return;
     if (cloudTimerRef.current) {
       clearTimeout(cloudTimerRef.current);
       cloudTimerRef.current = null;
@@ -788,11 +792,11 @@ export function AlbumCorner({
         /* ignore */
       }
     })();
-  }, [useCloudSync]);
+  }, [effectiveCloudSync]);
 
   const scheduleCloudUpsert = useCallback(
     (indices: number[]) => {
-      if (!useCloudSync) return;
+      if (!effectiveCloudSync) return;
       for (const i of indices) {
         if (i >= 0 && i < ALBUM_PAGE_COUNT) cloudDirtyRef.current.add(i);
       }
@@ -812,7 +816,7 @@ export function AlbumCorner({
         })();
       }, 2000);
     },
-    [useCloudSync]
+    [effectiveCloudSync]
   );
 
   useEffect(() => {

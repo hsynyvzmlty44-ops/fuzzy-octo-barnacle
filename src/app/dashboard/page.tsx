@@ -33,6 +33,19 @@ export default async function DashboardPage() {
   return (
     <>
       <FloatingHearts />
+      {localOk && !user ? (
+        <div
+          className="pointer-events-none fixed left-0 right-0 top-0 z-[60] flex justify-center px-4 pt-3"
+          role="status"
+        >
+          <p className="max-w-md rounded-2xl border border-amber-400/35 bg-amber-950/80 px-4 py-2 text-center text-xs text-amber-100/95 shadow-lg backdrop-blur-md">
+            Giriş Supabase’e bağlanamadı; albüm ve yapılacaklar yalnızca bu cihazda
+            saklanıyor. Diğer cihazlarda görmek için aynı e-posta/şifre ile girişin
+            başarılı olduğundan ve Vercel’de Supabase env değişkenlerinin dolu
+            olduğundan emin ol.
+          </p>
+        </div>
+      ) : null}
       <AlbumCorner useCloudSync={Boolean(user)} />
       <div className="relative w-full self-stretch">
         <DigitalPostits
