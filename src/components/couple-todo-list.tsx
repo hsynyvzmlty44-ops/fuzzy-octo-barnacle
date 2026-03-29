@@ -1,19 +1,104 @@
 "use client";
 
 import { newTodoId, readLocalTodos, writeLocalTodos } from "@/lib/local-todos";
+import { createBrowserSupabaseClient } from "@/lib/supabase";
+import { fetchTodosRemote, replaceTodosRemote } from "@/lib/todos-remote";
 import type { CoupleTodoItem } from "@/lib/todo-types";
 import { ListTodo, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-export function CoupleTodoList() {
+export function CoupleTodoList({
+  useCloudSync = false,
+}: {
+  useCloudSync?: boolean;
+} = {}) {
   const [items, setItems] = useState<CoupleTodoItem[]>([]);
   const [draft, setDraft] = useState("");
   const [ready, setReady] = useState(false);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const cloudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const pushTodosRemote = useCallback(() => {
+    if (!useCloudSync) return;
+    if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+    cloudTimerRef.current = setTimeout(() => {
+      cloudTimerRef.current = null;
+      void (async () => {
+        try {
+          const client = createBrowserSupabaseClient();
+          await replaceTodosRemote(client, itemsRef.current);
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 1200);
+  }, [useCloudSync]);
 
   useEffect(() => {
-    setItems(readLocalTodos());
-    setReady(true);
-  }, []);
+    const local = readLocalTodos();
+    setItems(local);
+
+    if (!useCloudSync) {
+      setReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const client = createBrowserSupabaseClient();
+        const remote = await fetchTodosRemote(client);
+        if (cancelled) return;
+        if (remote === null) {
+          setReady(true);
+          return;
+        }
+        if (remote.length > 0) {
+          setItems(remote);
+          writeLocalTodos(remote);
+        } else if (local.length > 0) {
+          await replaceTodosRemote(client, local);
+        }
+      } catch {
+        /* yerel liste kalır */
+      }
+      if (!cancelled) setReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [useCloudSync]);
+
+  useEffect(() => {
+    const flush = () => {
+      writeLocalTodos(itemsRef.current);
+      if (useCloudSync) {
+        if (cloudTimerRef.current) {
+          clearTimeout(cloudTimerRef.current);
+          cloudTimerRef.current = null;
+        }
+        void (async () => {
+          try {
+            const client = createBrowserSupabaseClient();
+            await replaceTodosRemote(client, itemsRef.current);
+          } catch {
+            /* ignore */
+          }
+        })();
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [useCloudSync]);
 
   const add = useCallback(() => {
     const text = draft.trim();
@@ -27,7 +112,8 @@ export function CoupleTodoList() {
       writeLocalTodos(next);
       return next;
     });
-  }, [draft]);
+    pushTodosRemote();
+  }, [draft, pushTodosRemote]);
 
   const toggle = useCallback((id: string) => {
     setItems((prev) => {
@@ -37,7 +123,8 @@ export function CoupleTodoList() {
       writeLocalTodos(next);
       return next;
     });
-  }, []);
+    pushTodosRemote();
+  }, [pushTodosRemote]);
 
   const remove = useCallback((id: string) => {
     setItems((prev) => {
@@ -45,7 +132,8 @@ export function CoupleTodoList() {
       writeLocalTodos(next);
       return next;
     });
-  }, []);
+    pushTodosRemote();
+  }, [pushTodosRemote]);
 
   return (
     <section

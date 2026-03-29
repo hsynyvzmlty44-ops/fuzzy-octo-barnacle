@@ -33,7 +33,7 @@ export default async function DashboardPage() {
   return (
     <>
       <FloatingHearts />
-      <AlbumCorner />
+      <AlbumCorner useCloudSync={Boolean(user)} />
       <div className="relative w-full self-stretch">
         <DigitalPostits
           userEmail={user?.email ?? null}
@@ -66,7 +66,7 @@ export default async function DashboardPage() {
             </p>
           </div>
 
-          <CoupleTodoList />
+          <CoupleTodoList useCloudSync={Boolean(user)} />
         </div>
       </div>
     </>

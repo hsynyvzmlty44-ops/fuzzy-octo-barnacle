@@ -5,7 +5,20 @@ import {
   DEFAULT_IMAGE_FRAME,
   type AlbumPageData,
 } from "@/lib/album-types";
-import { readAlbumPages, writeAlbumPages } from "@/lib/local-album";
+import {
+  loadAlbumPages,
+  saveAlbumPages,
+  syncAlbumPagesToLegacyLocalStorage,
+} from "@/lib/local-album";
+import { imageFileToAlbumDataUrl } from "@/lib/image-compress";
+import {
+  albumHasAnyContent,
+  fetchAlbumPagesRemote,
+  mergeAlbumForSync,
+  upsertAlbumPagesRemote,
+  upsertAllAlbumPagesRemote,
+} from "@/lib/album-remote";
+import { createBrowserSupabaseClient } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import {
   AnimatePresence,
@@ -613,7 +626,12 @@ function PageSheet({
   );
 }
 
-export function AlbumCorner() {
+export function AlbumCorner({
+  useCloudSync = false,
+}: {
+  /** Gerçek Supabase oturumu varken tüm cihazlarda aynı albüm */
+  useCloudSync?: boolean;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [pages, setPages] = useState<AlbumPageData[]>(() =>
@@ -631,6 +649,8 @@ export function AlbumCorner() {
   /** Hangi sayfada çerçeve tutamaçları (kalem) açık */
   const [frameEditIdx, setFrameEditIdx] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cloudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cloudDirtyRef = useRef<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement | null>(null);
   const editSideRef = useRef<"left" | "right">("left");
   const pagesRef = useRef(pages);
@@ -682,9 +702,44 @@ export function AlbumCorner() {
   const prevRightIdx = (spreadIndex - 1) * 2 + 1;
 
   useEffect(() => {
-    setPages(readAlbumPages());
-    setReady(true);
-  }, []);
+    let cancelled = false;
+    void (async () => {
+      const local = await loadAlbumPages();
+      if (cancelled) return;
+
+      if (!useCloudSync) {
+        setPages(local);
+        setReady(true);
+        return;
+      }
+
+      try {
+        const client = createBrowserSupabaseClient();
+        const remote = await fetchAlbumPagesRemote(client);
+        if (cancelled) return;
+
+        if (remote === null) {
+          setPages(local);
+        } else if (!albumHasAnyContent(remote) && albumHasAnyContent(local)) {
+          setPages(local);
+          void upsertAllAlbumPagesRemote(client, local);
+        } else if (!albumHasAnyContent(remote)) {
+          setPages(local);
+        } else {
+          const merged = mergeAlbumForSync(local, remote);
+          setPages(merged);
+          void saveAlbumPages(merged);
+          void upsertAllAlbumPagesRemote(client, merged);
+        }
+      } catch {
+        setPages(local);
+      }
+      if (!cancelled) setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [useCloudSync]);
 
   useEffect(() => {
     if (!open) return;
@@ -712,9 +767,87 @@ export function AlbumCorner() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      writeAlbumPages(next);
-    }, 450);
+      void saveAlbumPages(next);
+    }, 200);
   }, []);
+
+  const flushCloudUpsert = useCallback(() => {
+    if (!useCloudSync) return;
+    if (cloudTimerRef.current) {
+      clearTimeout(cloudTimerRef.current);
+      cloudTimerRef.current = null;
+    }
+    const idxs = [...cloudDirtyRef.current];
+    cloudDirtyRef.current.clear();
+    if (idxs.length === 0) return;
+    void (async () => {
+      try {
+        const client = createBrowserSupabaseClient();
+        await upsertAlbumPagesRemote(client, pagesRef.current, idxs);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [useCloudSync]);
+
+  const scheduleCloudUpsert = useCallback(
+    (indices: number[]) => {
+      if (!useCloudSync) return;
+      for (const i of indices) {
+        if (i >= 0 && i < ALBUM_PAGE_COUNT) cloudDirtyRef.current.add(i);
+      }
+      if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+      cloudTimerRef.current = setTimeout(() => {
+        cloudTimerRef.current = null;
+        const idxs = [...cloudDirtyRef.current];
+        cloudDirtyRef.current.clear();
+        if (idxs.length === 0) return;
+        void (async () => {
+          try {
+            const client = createBrowserSupabaseClient();
+            await upsertAlbumPagesRemote(client, pagesRef.current, idxs);
+          } catch {
+            /* ignore */
+          }
+        })();
+      }, 2000);
+    },
+    [useCloudSync]
+  );
+
+  useEffect(() => {
+    const flush = () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      void saveAlbumPages(pagesRef.current);
+      flushCloudUpsert();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    const onPageHide = () => {
+      flush();
+      syncAlbumPagesToLegacyLocalStorage(pagesRef.current);
+    };
+    const onBeforeUnload = () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      flushCloudUpsert();
+      syncAlbumPagesToLegacyLocalStorage(pagesRef.current);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [flushCloudUpsert]);
 
   const updatePageAt = useCallback(
     (idx: number, patch: Partial<AlbumPageData>) => {
@@ -722,10 +855,11 @@ export function AlbumCorner() {
         const copy = [...prev];
         copy[idx] = { ...copy[idx]!, ...patch };
         scheduleSave(copy);
+        scheduleCloudUpsert([idx]);
         return copy;
       });
     },
-    [scheduleSave]
+    [scheduleSave, scheduleCloudUpsert]
   );
 
   const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -735,19 +869,17 @@ export function AlbumCorner() {
       return;
     }
     const idx = editSideRef.current === "left" ? leftIdx : rightIdx;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const data = reader.result;
-      if (typeof data === "string") {
+    void (async () => {
+      const data = await imageFileToAlbumDataUrl(file);
+      if (data) {
         updatePageAt(idx, {
           image: data,
           ...DEFAULT_IMAGE_FRAME,
         });
         setUploadModalOpen(false);
       }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
+      e.target.value = "";
+    })();
   };
 
   const openUploadModal = useCallback((side: "left" | "right") => {

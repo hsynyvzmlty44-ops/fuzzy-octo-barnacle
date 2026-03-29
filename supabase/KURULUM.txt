@@ -12,6 +12,7 @@ Project Settings → API
 B) SQL
 ------
 SQL Editor → supabase/setup-lila-kopru.sql tamamını çalıştır.
+(Albüm + yapılacaklar bulutu için couple_album_pages ve couple_todos tabloları da bu dosyada.)
 
 C) Auth kullanıcısı (otomatik — önerilir)
 -----------------------------------------

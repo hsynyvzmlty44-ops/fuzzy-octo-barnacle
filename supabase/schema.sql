@@ -93,3 +93,35 @@ begin
     alter publication supabase_realtime add table public.couple_postits;
   end if;
 end $$;
+
+create table if not exists public.couple_album_pages (
+  page_index smallint primary key check (page_index >= 0 and page_index < 100),
+  quote text not null default '',
+  date text not null default '',
+  image_data text,
+  image_rotation double precision,
+  image_scale double precision,
+  image_pan_x double precision,
+  image_pan_y double precision,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.couple_album_pages enable row level security;
+create policy "couple_album_pages_select" on public.couple_album_pages for select to authenticated using (true);
+create policy "couple_album_pages_insert" on public.couple_album_pages for insert to authenticated with check (true);
+create policy "couple_album_pages_update" on public.couple_album_pages for update to authenticated using (true) with check (true);
+create policy "couple_album_pages_delete" on public.couple_album_pages for delete to authenticated using (true);
+
+create table if not exists public.couple_todos (
+  id uuid primary key,
+  text text not null,
+  done boolean not null default false,
+  sort_order int not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.couple_todos enable row level security;
+create policy "couple_todos_select" on public.couple_todos for select to authenticated using (true);
+create policy "couple_todos_insert" on public.couple_todos for insert to authenticated with check (true);
+create policy "couple_todos_update" on public.couple_todos for update to authenticated using (true) with check (true);
+create policy "couple_todos_delete" on public.couple_todos for delete to authenticated using (true);

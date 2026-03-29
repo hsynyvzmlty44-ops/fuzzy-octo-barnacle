@@ -37,7 +37,11 @@ export function readLocalTodos(): CoupleTodoItem[] {
 
 export function writeLocalTodos(items: CoupleTodoItem[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(items));
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(items));
+  } catch (e) {
+    console.warn("Yapılacaklar kaydedilemedi (depolama / gizli sekme?)", e);
+  }
 }
 
 export { newId as newTodoId };
