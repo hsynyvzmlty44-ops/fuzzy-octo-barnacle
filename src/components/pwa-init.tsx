@@ -3,20 +3,27 @@
 /**
  * PWA başlatma ve arka plan konum takibi.
  *
- * - Service Worker kaydeder.
- * - Supabase yapılandırmasını IndexedDB'ye yazar (SW bu verileri kullanır).
- * - Kullanıcı giriş yaptıysa konum izni ister ve Periodic Background Sync kaydeder.
- * - Uygulama açıkken her 20 dakikada bir aktif konum alır.
- * - SW'den gelen konum isteklerini karşılar (MessageChannel).
+ * Temel akış:
+ * 1. Sayfa ilk açıldığında Service Worker kaydedilir.
+ * 2. supabase.auth.onAuthStateChange ile SIGNED_IN / INITIAL_SESSION dinlenir.
+ * 3. Oturum algılandığında Permissions API'ye bakılır:
+ *    - 'granted'  → sessizce konum al ve kaydet.
+ *    - 'prompt'   → tarayıcı izin dialogunu göster (getCurrentPosition çağrısıyla).
+ *    - 'denied'   → yapılabilecek bir şey yok.
+ * 4. Uygulama açıkken her 20 dakikada bir ve sekme görünür olduğunda konum alınır.
+ * 5. SW'den gelen MessageChannel konum istekleri karşılanır.
+ *
+ * NOT: useEffect layout'ta bir kez çalışır; login→dashboard navigasyonunda
+ * yeniden çalışmaz. Bu yüzden onAuthStateChange kullanılır.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 const DB_NAME = "bakalim-config";
 const DB_VERSION = 1;
 const CONFIG_STORE = "config";
 
-// ── IndexedDB yardımcıları ─────────────────────────────────────────────────
+// ── IndexedDB ──────────────────────────────────────────────────────────────
 
 function openConfigDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -28,8 +35,7 @@ function openConfigDB(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = (e) => resolve((e.target as IDBOpenDBRequest).result);
-    req.onerror = (e) =>
-      reject((e.target as IDBOpenDBRequest).error);
+    req.onerror = (e) => reject((e.target as IDBOpenDBRequest).error);
   });
 }
 
@@ -43,7 +49,7 @@ async function setConfig(key: string, value: string): Promise<void> {
   });
 }
 
-// ── Supabase yapılandırmasını IndexedDB'ye kaydet ──────────────────────────
+// ── Supabase yapılandırmasını SW için IndexedDB'ye yaz ─────────────────────
 
 async function storeSupabaseConfig(): Promise<void> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -52,78 +58,24 @@ async function storeSupabaseConfig(): Promise<void> {
   if (key) await setConfig("anonKey", key);
 }
 
-// ── Supabase oturumunu IndexedDB'ye kaydet (SW için) ──────────────────────
+async function storeAuthSession(token: string, userId: string): Promise<void> {
+  await setConfig("authToken", token);
+  await setConfig("userId", userId);
+}
 
-async function storeAuthSession(): Promise<void> {
+// ── Geolocation Permissions API ────────────────────────────────────────────
+
+async function checkGeolocationPermission(): Promise<PermissionState> {
+  if (!navigator.permissions) return "prompt";
   try {
-    const { createBrowserSupabaseClient } = await import("@/lib/supabase");
-    const supabase = createBrowserSupabaseClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (session) {
-      await setConfig("authToken", session.access_token);
-      await setConfig("userId", session.user.id);
-    }
+    const result = await navigator.permissions.query({ name: "geolocation" });
+    return result.state;
   } catch {
-    // Supabase mevcut değil veya oturum yok
+    return "prompt";
   }
 }
 
-// ── Konum → Supabase ───────────────────────────────────────────────────────
-
-async function saveLocationToSupabase(
-  coords: GeolocationCoordinates
-): Promise<void> {
-  try {
-    const { createBrowserSupabaseClient } = await import("@/lib/supabase");
-    const supabase = createBrowserSupabaseClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-
-    await supabase.from("location_logs").insert({
-      user_id: user.id,
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      accuracy: coords.accuracy ?? null,
-      recorded_at: new Date().toISOString(),
-    });
-  } catch {
-    // Sessizce başarısız ol
-  }
-}
-
-// ── Konum iznini location_permissions tablosuna kaydet ────────────────────
-
-async function saveLocationPermission(
-  geolocationGranted: boolean,
-  periodicSyncSupported: boolean
-): Promise<void> {
-  try {
-    const { createBrowserSupabaseClient } = await import("@/lib/supabase");
-    const supabase = createBrowserSupabaseClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-
-    await supabase.from("location_permissions").upsert(
-      {
-        user_id: user.id,
-        geolocation_granted: geolocationGranted,
-        periodic_sync_supported: periodicSyncSupported,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id" }
-    );
-  } catch {
-    // Sessizce başarısız ol
-  }
-}
-
-// ── Konum al ve kaydet ─────────────────────────────────────────────────────
+// ── Konum alma ─────────────────────────────────────────────────────────────
 
 function getCurrentLocation(): Promise<GeolocationCoordinates> {
   return new Promise((resolve, reject) => {
@@ -139,39 +91,71 @@ function getCurrentLocation(): Promise<GeolocationCoordinates> {
   });
 }
 
-async function trackLocationNow(): Promise<void> {
+// ── Konum → Supabase ───────────────────────────────────────────────────────
+
+async function saveLocationToSupabase(
+  coords: GeolocationCoordinates,
+  userId: string
+): Promise<void> {
   try {
-    const coords = await getCurrentLocation();
-    await saveLocationToSupabase(coords);
-    await storeAuthSession(); // Token'ı SW için taze tut
+    const { createBrowserSupabaseClient } = await import("@/lib/supabase");
+    const supabase = createBrowserSupabaseClient();
+    await supabase.from("location_logs").insert({
+      user_id: userId,
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      accuracy: coords.accuracy ?? null,
+      recorded_at: new Date().toISOString(),
+    });
   } catch {
     // Sessizce başarısız ol
   }
 }
 
-// ── Periodic Background Sync kayıt ────────────────────────────────────────
+// ── İzin durumunu Supabase'e kaydet ───────────────────────────────────────
+
+async function saveLocationPermission(
+  geolocationGranted: boolean,
+  periodicSyncSupported: boolean,
+  userId: string
+): Promise<void> {
+  try {
+    const { createBrowserSupabaseClient } = await import("@/lib/supabase");
+    const supabase = createBrowserSupabaseClient();
+    await supabase.from("location_permissions").upsert(
+      {
+        user_id: userId,
+        geolocation_granted: geolocationGranted,
+        periodic_sync_supported: periodicSyncSupported,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" }
+    );
+  } catch {
+    // Sessizce başarısız ol
+  }
+}
+
+// ── Periodic Background Sync ───────────────────────────────────────────────
 
 async function registerPeriodicSync(
   registration: ServiceWorkerRegistration
 ): Promise<boolean> {
   if (!("periodicSync" in registration)) return false;
-
   try {
     const status = await navigator.permissions.query({
-      // @ts-expect-error — periodic-background-sync henüz standart TS tiplerinde yok
+      // @ts-expect-error — henüz standart TS tiplerinde yok
       name: "periodic-background-sync",
     });
-
     if (status.state === "granted") {
-      // @ts-expect-error — periodicSync henüz standart TS tiplerinde yok
+      // @ts-expect-error — henüz standart TS tiplerinde yok
       await registration.periodicSync.register("location-sync", {
-        minInterval: 15 * 60 * 1000, // 15 dakika (tarayıcı daha uzun süre uygulayabilir)
+        minInterval: 15 * 60 * 1000,
       });
-      console.log("[PWA] Periodic Background Sync kaydedildi.");
       return true;
     }
   } catch {
-    // Desteklenmiyor (iOS, Firefox vb.)
+    // Desteklenmiyor
   }
   return false;
 }
@@ -179,108 +163,166 @@ async function registerPeriodicSync(
 // ── Ana bileşen ────────────────────────────────────────────────────────────
 
 export function PwaInit() {
+  // Aktif takip interval'ını ref'te tut — auth değiştiğinde yönetmek için
+  const trackingTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(
+    undefined
+  );
+  // Zaten izin işlemi çalışıyor mu?
+  const permissionInProgressRef = useRef(false);
+  // SW kaydı ref'i
+  const registrationRef = useRef<ServiceWorkerRegistration | undefined>(
+    undefined
+  );
+
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
 
-    let trackingTimer: ReturnType<typeof setInterval> | undefined;
-
-    async function init() {
-      // 1. Service Worker kaydet
-      let registration: ServiceWorkerRegistration;
-      try {
-        registration = await navigator.serviceWorker.register("/sw.js", {
-          scope: "/",
-        });
+    // ── 1. Service Worker kaydı ──────────────────────────────────────────
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
+      .then((reg) => {
+        registrationRef.current = reg;
         console.log("[PWA] Service Worker kaydedildi.");
-      } catch (err) {
+        return storeSupabaseConfig();
+      })
+      .catch((err) => {
         console.warn("[PWA] Service Worker kaydı başarısız:", err);
-        return;
+      });
+
+    // ── 2. SW'den gelen konum isteklerini karşıla (MessageChannel) ───────
+    const onSwMessage = async (event: MessageEvent) => {
+      if (event.data?.type !== "REQUEST_LOCATION") return;
+      const port = event.ports[0];
+      if (!port) return;
+      try {
+        const coords = await getCurrentLocation();
+        port.postMessage({
+          location: {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy,
+          },
+        });
+      } catch (err) {
+        port.postMessage({
+          error: err instanceof Error ? err.message : "Konum alınamadı.",
+        });
       }
+    };
+    navigator.serviceWorker.addEventListener("message", onSwMessage);
 
-      // 2. SW'ye Supabase yapılandırmasını IndexedDB aracılığıyla ilet
-      await storeSupabaseConfig();
-      await storeAuthSession();
+    // ── 3. Oturum değişikliklerini dinle ─────────────────────────────────
+    async function onSignedIn(session: {
+      access_token: string;
+      user: { id: string };
+    }) {
+      // SW için token'ı sakla
+      await storeAuthSession(session.access_token, session.user.id);
 
-      // 3. SW'den gelen konum isteklerini karşıla (MessageChannel)
-      navigator.serviceWorker.addEventListener(
-        "message",
-        async (event: MessageEvent) => {
-          if (event.data?.type !== "REQUEST_LOCATION") return;
-          const port = event.ports[0];
-          if (!port) return;
+      const userId = session.user.id;
 
+      // İzin işlemi zaten çalışıyorsa tekrar başlatma
+      if (permissionInProgressRef.current) return;
+      permissionInProgressRef.current = true;
+
+      try {
+        const permState = await checkGeolocationPermission();
+
+        if (permState === "denied") {
+          // Kullanıcı daha önce reddetmiş, yapacak bir şey yok
+          await saveLocationPermission(false, false, userId);
+        } else {
+          // 'granted' veya 'prompt' — getCurrentPosition çağrısı:
+          // 'prompt' durumunda tarayıcı izin dialogunu gösterir.
+          // 'granted' durumunda sessizce alır.
+          let granted = false;
           try {
             const coords = await getCurrentLocation();
-            await saveLocationToSupabase(coords);
-            port.postMessage({
-              location: {
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-                accuracy: coords.accuracy,
-              },
-            });
-          } catch (err) {
-            port.postMessage({
-              error: err instanceof Error ? err.message : "Konum alınamadı.",
-            });
+            await saveLocationToSupabase(coords, userId);
+            granted = true;
+          } catch {
+            // Reddedildi veya hata
           }
+
+          const periodicSyncSupported = registrationRef.current
+            ? await registerPeriodicSync(registrationRef.current)
+            : false;
+
+          await saveLocationPermission(granted, periodicSyncSupported, userId);
         }
-      );
-
-      // 4. İlk konum izni talebi (her cihazda yalnızca bir kez)
-      const alreadyAsked = localStorage.getItem("location-permission-asked");
-      if (!alreadyAsked) {
-        try {
-          const { createBrowserSupabaseClient } = await import("@/lib/supabase");
-          const supabase = createBrowserSupabaseClient();
-          const {
-            data: { user },
-          } = await supabase.auth.getUser();
-
-          if (user) {
-            localStorage.setItem("location-permission-asked", "1");
-
-            // Konum iznini iste (tarayıcı izin dialogu gösterir)
-            let geolocationGranted = false;
-            try {
-              const coords = await getCurrentLocation();
-              await saveLocationToSupabase(coords);
-              await storeAuthSession();
-              geolocationGranted = true;
-            } catch {
-              // İzin reddedildi veya hata
-            }
-
-            // Periodic Background Sync kaydını dene
-            const periodicSyncSupported = await registerPeriodicSync(
-              registration
-            );
-
-            // İzin durumunu Supabase'e kaydet
-            await saveLocationPermission(geolocationGranted, periodicSyncSupported);
-          }
-        } catch {
-          // Supabase mevcut değil veya oturum yok — sonra tekrar dene
-        }
+      } finally {
+        permissionInProgressRef.current = false;
       }
 
-      // 5. Uygulama açıkken aktif konum takibi (her 20 dakika)
-      trackingTimer = setInterval(() => {
-        void trackLocationNow();
-      }, 20 * 60 * 1000);
+      // Aktif takip zaten başlamışsa yeniden başlatma
+      if (trackingTimerRef.current !== undefined) return;
 
-      // 6. Sayfa görünür olduğunda da konum al
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") {
-          void trackLocationNow();
+      // Her 20 dakikada bir konum al
+      trackingTimerRef.current = setInterval(async () => {
+        try {
+          const coords = await getCurrentLocation();
+          await saveLocationToSupabase(coords, userId);
+        } catch {
+          // Sessizce başarısız ol
         }
-      });
+      }, 20 * 60 * 1000);
     }
 
-    void init();
+    function onSignedOut() {
+      if (trackingTimerRef.current !== undefined) {
+        clearInterval(trackingTimerRef.current);
+        trackingTimerRef.current = undefined;
+      }
+    }
+
+    // Sayfa görünür olduğunda konum al (sekme öne gelince)
+    const onVisibilityChange = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const { createBrowserSupabaseClient } = await import("@/lib/supabase");
+        const supabase = createBrowserSupabaseClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) return;
+        const coords = await getCurrentLocation();
+        await saveLocationToSupabase(coords, session.user.id);
+      } catch {
+        // Sessizce başarısız ol
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    // onAuthStateChange: INITIAL_SESSION (zaten giriş yapılmış) ve
+    // SIGNED_IN (yeni giriş) eventlerini yakalar.
+    let authUnsub: (() => void) | undefined;
+    import("@/lib/supabase")
+      .then(({ createBrowserSupabaseClient }) => {
+        const supabase = createBrowserSupabaseClient();
+        const { data } = supabase.auth.onAuthStateChange((event, session) => {
+          if (
+            (event === "INITIAL_SESSION" || event === "SIGNED_IN") &&
+            session
+          ) {
+            void onSignedIn(session);
+          }
+          if (event === "SIGNED_OUT") {
+            onSignedOut();
+          }
+        });
+        authUnsub = data.subscription.unsubscribe;
+      })
+      .catch(() => {
+        // Supabase mevcut değil
+      });
 
     return () => {
-      if (trackingTimer !== undefined) clearInterval(trackingTimer);
+      navigator.serviceWorker.removeEventListener("message", onSwMessage);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      authUnsub?.();
+      if (trackingTimerRef.current !== undefined) {
+        clearInterval(trackingTimerRef.current);
+      }
     };
   }, []);
 
