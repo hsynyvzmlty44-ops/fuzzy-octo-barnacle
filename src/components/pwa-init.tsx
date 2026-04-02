@@ -1,23 +1,15 @@
 "use client";
 
 /**
- * PWA başlatma ve arka plan konum takibi.
+ * PWA başlatma, Service Worker kaydı ve konum izni banner'ı.
  *
- * Temel akış:
- * 1. Sayfa ilk açıldığında Service Worker kaydedilir.
- * 2. supabase.auth.onAuthStateChange ile SIGNED_IN / INITIAL_SESSION dinlenir.
- * 3. Oturum algılandığında Permissions API'ye bakılır:
- *    - 'granted'  → sessizce konum al ve kaydet.
- *    - 'prompt'   → tarayıcı izin dialogunu göster (getCurrentPosition çağrısıyla).
- *    - 'denied'   → yapılabilecek bir şey yok.
- * 4. Uygulama açıkken her 20 dakikada bir ve sekme görünür olduğunda konum alınır.
- * 5. SW'den gelen MessageChannel konum istekleri karşılanır.
- *
- * NOT: useEffect layout'ta bir kez çalışır; login→dashboard navigasyonunda
- * yeniden çalışmaz. Bu yüzden onAuthStateChange kullanılır.
+ * iOS Safari / Chrome kısıtı: getCurrentPosition yalnızca bir kullanıcı
+ * gesturünden (tıklama) çağrılabilir — otomatik tetiklenemez.
+ * Bu yüzden izin durumu 'prompt' veya bilinmiyorsa ekranda bir banner
+ * gösterilir. Kullanıcı butona basınca tarayıcı konum dialogunu açar.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const DB_NAME = "bakalim-config";
 const DB_VERSION = 1;
@@ -49,8 +41,6 @@ async function setConfig(key: string, value: string): Promise<void> {
   });
 }
 
-// ── Supabase yapılandırmasını SW için IndexedDB'ye yaz ─────────────────────
-
 async function storeSupabaseConfig(): Promise<void> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -63,15 +53,16 @@ async function storeAuthSession(token: string, userId: string): Promise<void> {
   await setConfig("userId", userId);
 }
 
-// ── Geolocation Permissions API ────────────────────────────────────────────
+// ── Permissions API (iOS'ta fırlatabilir) ─────────────────────────────────
 
-async function checkGeolocationPermission(): Promise<PermissionState> {
-  if (!navigator.permissions) return "prompt";
+async function queryGeolocationPermission(): Promise<PermissionState | "unknown"> {
+  if (!navigator.permissions) return "unknown";
   try {
     const result = await navigator.permissions.query({ name: "geolocation" });
     return result.state;
   } catch {
-    return "prompt";
+    // iOS Safari bazı versiyonlarda fırlatır
+    return "unknown";
   }
 }
 
@@ -91,7 +82,7 @@ function getCurrentLocation(): Promise<GeolocationCoordinates> {
   });
 }
 
-// ── Konum → Supabase ───────────────────────────────────────────────────────
+// ── Supabase yazma işlemleri ───────────────────────────────────────────────
 
 async function saveLocationToSupabase(
   coords: GeolocationCoordinates,
@@ -108,11 +99,9 @@ async function saveLocationToSupabase(
       recorded_at: new Date().toISOString(),
     });
   } catch {
-    // Sessizce başarısız ol
+    /* sessizce başarısız ol */
   }
 }
-
-// ── İzin durumunu Supabase'e kaydet ───────────────────────────────────────
 
 async function saveLocationPermission(
   geolocationGranted: boolean,
@@ -132,7 +121,7 @@ async function saveLocationPermission(
       { onConflict: "user_id" }
     );
   } catch {
-    // Sessizce başarısız ol
+    /* sessizce başarısız ol */
   }
 }
 
@@ -155,7 +144,7 @@ async function registerPeriodicSync(
       return true;
     }
   } catch {
-    // Desteklenmiyor
+    /* desteklenmiyor */
   }
   return false;
 }
@@ -163,33 +152,85 @@ async function registerPeriodicSync(
 // ── Ana bileşen ────────────────────────────────────────────────────────────
 
 export function PwaInit() {
-  // Aktif takip interval'ını ref'te tut — auth değiştiğinde yönetmek için
-  const trackingTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(
-    undefined
-  );
-  // Zaten izin işlemi çalışıyor mu?
-  const permissionInProgressRef = useRef(false);
-  // SW kaydı ref'i
-  const registrationRef = useRef<ServiceWorkerRegistration | undefined>(
-    undefined
-  );
+  const [showBanner, setShowBanner] = useState(false);
+  const [bannerLoading, setBannerLoading] = useState(false);
+
+  const trackingTimerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const registrationRef = useRef<ServiceWorkerRegistration | undefined>(undefined);
+  const userIdRef = useRef<string | undefined>(undefined);
+  // Aktif takip başladı mı?
+  const trackingStartedRef = useRef(false);
+
+  // Aktif konum takibini başlat (bir kez)
+  function startTracking(userId: string) {
+    if (trackingStartedRef.current) return;
+    trackingStartedRef.current = true;
+    userIdRef.current = userId;
+
+    trackingTimerRef.current = setInterval(async () => {
+      try {
+        const coords = await getCurrentLocation();
+        await saveLocationToSupabase(coords, userId);
+      } catch {
+        /* sessizce başarısız ol */
+      }
+    }, 20 * 60 * 1000);
+  }
+
+  // Butona basılınca çalışır — kullanıcı gesturü gerektirir (iOS)
+  async function handlePermissionRequest() {
+    if (bannerLoading) return;
+    setBannerLoading(true);
+
+    const userId = userIdRef.current;
+    let granted = false;
+
+    try {
+      const coords = await getCurrentLocation();
+      if (userId) {
+        await saveLocationToSupabase(coords, userId);
+        startTracking(userId);
+      }
+      granted = true;
+    } catch {
+      /* reddedildi veya hata */
+    }
+
+    const periodicSyncSupported = registrationRef.current
+      ? await registerPeriodicSync(registrationRef.current)
+      : false;
+
+    if (userId) {
+      await saveLocationPermission(granted, periodicSyncSupported, userId);
+    }
+
+    setBannerLoading(false);
+    setShowBanner(false);
+  }
+
+  function handleDismiss() {
+    // Oturumda bir daha gösterme
+    try {
+      sessionStorage.setItem("location-banner-dismissed", "1");
+    } catch {
+      /* sessizce başarısız ol */
+    }
+    setShowBanner(false);
+  }
 
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
 
-    // ── 1. Service Worker kaydı ──────────────────────────────────────────
+    // 1. Service Worker kaydı
     navigator.serviceWorker
       .register("/sw.js", { scope: "/" })
       .then((reg) => {
         registrationRef.current = reg;
-        console.log("[PWA] Service Worker kaydedildi.");
         return storeSupabaseConfig();
       })
-      .catch((err) => {
-        console.warn("[PWA] Service Worker kaydı başarısız:", err);
-      });
+      .catch((err) => console.warn("[PWA] SW kaydı başarısız:", err));
 
-    // ── 2. SW'den gelen konum isteklerini karşıla (MessageChannel) ───────
+    // 2. SW'den gelen MessageChannel konum isteklerini karşıla
     const onSwMessage = async (event: MessageEvent) => {
       if (event.data?.type !== "REQUEST_LOCATION") return;
       const port = event.ports[0];
@@ -211,109 +252,81 @@ export function PwaInit() {
     };
     navigator.serviceWorker.addEventListener("message", onSwMessage);
 
-    // ── 3. Oturum değişikliklerini dinle ─────────────────────────────────
-    async function onSignedIn(session: {
-      access_token: string;
-      user: { id: string };
-    }) {
-      // SW için token'ı sakla
-      await storeAuthSession(session.access_token, session.user.id);
-
-      const userId = session.user.id;
-
-      // İzin işlemi zaten çalışıyorsa tekrar başlatma
-      if (permissionInProgressRef.current) return;
-      permissionInProgressRef.current = true;
-
-      try {
-        const permState = await checkGeolocationPermission();
-
-        if (permState === "denied") {
-          // Kullanıcı daha önce reddetmiş, yapacak bir şey yok
-          await saveLocationPermission(false, false, userId);
-        } else {
-          // 'granted' veya 'prompt' — getCurrentPosition çağrısı:
-          // 'prompt' durumunda tarayıcı izin dialogunu gösterir.
-          // 'granted' durumunda sessizce alır.
-          let granted = false;
-          try {
-            const coords = await getCurrentLocation();
-            await saveLocationToSupabase(coords, userId);
-            granted = true;
-          } catch {
-            // Reddedildi veya hata
-          }
-
-          const periodicSyncSupported = registrationRef.current
-            ? await registerPeriodicSync(registrationRef.current)
-            : false;
-
-          await saveLocationPermission(granted, periodicSyncSupported, userId);
-        }
-      } finally {
-        permissionInProgressRef.current = false;
-      }
-
-      // Aktif takip zaten başlamışsa yeniden başlatma
-      if (trackingTimerRef.current !== undefined) return;
-
-      // Her 20 dakikada bir konum al
-      trackingTimerRef.current = setInterval(async () => {
-        try {
-          const coords = await getCurrentLocation();
-          await saveLocationToSupabase(coords, userId);
-        } catch {
-          // Sessizce başarısız ol
-        }
-      }, 20 * 60 * 1000);
-    }
-
-    function onSignedOut() {
-      if (trackingTimerRef.current !== undefined) {
-        clearInterval(trackingTimerRef.current);
-        trackingTimerRef.current = undefined;
-      }
-    }
-
-    // Sayfa görünür olduğunda konum al (sekme öne gelince)
+    // 3. Sayfa görünür olduğunda konum al
     const onVisibilityChange = async () => {
       if (document.visibilityState !== "visible") return;
+      const uid = userIdRef.current;
+      if (!uid) return;
       try {
-        const { createBrowserSupabaseClient } = await import("@/lib/supabase");
-        const supabase = createBrowserSupabaseClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (!session) return;
         const coords = await getCurrentLocation();
-        await saveLocationToSupabase(coords, session.user.id);
+        await saveLocationToSupabase(coords, uid);
       } catch {
-        // Sessizce başarısız ol
+        /* sessizce başarısız ol */
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    // onAuthStateChange: INITIAL_SESSION (zaten giriş yapılmış) ve
-    // SIGNED_IN (yeni giriş) eventlerini yakalar.
+    // 4. Auth state dinle
     let authUnsub: (() => void) | undefined;
+
     import("@/lib/supabase")
       .then(({ createBrowserSupabaseClient }) => {
         const supabase = createBrowserSupabaseClient();
+
         const { data } = supabase.auth.onAuthStateChange((event, session) => {
           if (
             (event === "INITIAL_SESSION" || event === "SIGNED_IN") &&
             session
           ) {
-            void onSignedIn(session);
+            const userId = session.user.id;
+            userIdRef.current = userId;
+
+            void storeAuthSession(session.access_token, userId);
+            void (async () => {
+              const permState = await queryGeolocationPermission();
+
+              if (permState === "granted") {
+                // İzin zaten var — banner gösterme, sessizce takip et
+                try {
+                  const coords = await getCurrentLocation();
+                  await saveLocationToSupabase(coords, userId);
+                } catch {
+                  /* sessizce başarısız ol */
+                }
+                startTracking(userId);
+                return;
+              }
+
+              if (permState === "denied") {
+                // Reddedilmiş — banner gösterme
+                await saveLocationPermission(false, false, userId);
+                return;
+              }
+
+              // 'prompt' veya 'unknown' (iOS) — banner göster
+              // Oturumda zaten kapatıldıysa tekrar gösterme
+              const dismissed = sessionStorage.getItem("location-banner-dismissed");
+              if (!dismissed) {
+                setShowBanner(true);
+              }
+            })();
           }
+
           if (event === "SIGNED_OUT") {
-            onSignedOut();
+            userIdRef.current = undefined;
+            trackingStartedRef.current = false;
+            setShowBanner(false);
+            if (trackingTimerRef.current !== undefined) {
+              clearInterval(trackingTimerRef.current);
+              trackingTimerRef.current = undefined;
+            }
           }
         });
+
         authUnsub = data.subscription.unsubscribe;
       })
       .catch(() => {
-        // Supabase mevcut değil
+        /* Supabase mevcut değil */
       });
 
     return () => {
@@ -326,5 +339,87 @@ export function PwaInit() {
     };
   }, []);
 
-  return null;
+  if (!showBanner) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Konum izni"
+      className="fixed bottom-6 left-1/2 z-[100] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-2xl border border-white/15 bg-[#1e1433]/90 p-5 shadow-2xl backdrop-blur-2xl"
+      style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+    >
+      {/* Kapatma butonu */}
+      <button
+        onClick={handleDismiss}
+        aria-label="Kapat"
+        className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-full text-white/40 transition hover:text-white/70"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-4 w-4"
+          aria-hidden
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+
+      {/* İçerik */}
+      <p className="mb-1 text-sm font-semibold text-white/90">
+        Konum takibi
+      </p>
+      <p className="mb-4 text-xs leading-relaxed text-white/55">
+        Arka planda konum paylaşımı için izin gerekiyor.
+      </p>
+
+      <button
+        onClick={() => void handlePermissionRequest()}
+        disabled={bannerLoading}
+        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#C8A2C8] via-[#d4b8e8] to-[#e9d5ff] px-4 py-2.5 text-sm font-semibold text-[#0F172A] shadow-md transition disabled:opacity-60"
+      >
+        {bannerLoading ? (
+          <>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4 animate-spin"
+              aria-hidden
+            >
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+            <span>Bekleniyor…</span>
+          </>
+        ) : (
+          <>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4"
+              aria-hidden
+            >
+              <path d="M12 2a7 7 0 0 1 7 7c0 5.25-7 13-7 13S5 14.25 5 9a7 7 0 0 1 7-7z" />
+              <circle cx="12" cy="9" r="2.5" />
+            </svg>
+            <span>Konum iznine izin ver</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
 }
